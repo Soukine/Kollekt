@@ -1,0 +1,6 @@
+{
+  "name": "Kollekt - SaaS de Fidélité Digitale & Wallet pour Commerces Locaux",
+  "description": "Transformez vos clients occasionnels en habitués réguliers grâce à une carte de fidélité digitale sans application, compatible Apple Wallet et Google Wallet.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  
+  --color-kollekt-bg: #211D1A;
+  --color-kollekt-card: #2C2825;
+  --color-kollekt-coral: #FF765F;
+  --color-kollekt-coral-hover: #ff5e42;
+  --color-kollekt-green: #8BE3A2;
+  --color-kollekt-green-hover: #72db8d;
+  --color-kollekt-text: #F7F4F0;
+  --color-kollekt-muted: #A9A39D;
+  --color-kollekt-border: rgba(169, 163, 157, 0.15);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #211D1A;
+  color: #F7F4F0;
+  overflow-x: hidden;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #211D1A;
+}
+::-webkit-scrollbar-thumb {
+  background: #3A3530;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4A443E;
+}
+
+/* Card flip 3D animation */
+.perspective-1000 {
+  perspective: 1000px;
+}
+.transform-style-3d {
+  transform-style: preserve-3d;
+}
+.backface-hidden {
+  backface-visibility: hidden;
+}
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+@media print {
+  body {
+    background-color: white !important;
+    color: black !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+}
