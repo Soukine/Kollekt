@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import { useAuth } from './AuthContext';
 import {
   Shop,
   Customer,
@@ -8,6 +9,7 @@ import {
   ActiveRole,
   CardConfig,
   EnrollPublicCardResult,
+  ShopLocation,
 } from '../types';
 import {
   INITIAL_SHOPS,
@@ -15,8 +17,14 @@ import {
   INITIAL_AUDIT_LOGS,
   INITIAL_CAMPAIGNS,
   INITIAL_STAFF,
+  INITIAL_LOCATIONS,
 } from '../data/initialData';
-import { generateIdempotencyKey, checkAndMarkIdempotent } from '../utils/idempotency';
+import {
+  generateIdempotencyKey,
+  checkAndMarkIdempotent,
+  acquireOperationLock,
+  releaseOperationLock,
+} from '../utils/idempotency';
 import { fireRewardConfetti } from '../utils/confetti';
 
 interface PushNotificationToast {
@@ -44,12 +52,17 @@ interface AppContextType {
   auditLogs: AuditLogEntry[];
   campaigns: Campaign[];
   staff: StaffMember[];
+  locations: ShopLocation[];
+  currentLocationId: string | null;
+  setCurrentLocationId: (id: string | null) => void;
 
-  // Mutations
-  addStamps: (customerId: string, count: number, note?: string) => Promise<{ success: boolean; message: string; rewardUnlocked?: boolean }>;
-  addPoints: (customerId: string, points: number, spentAmount?: number, note?: string) => Promise<{ success: boolean; message: string; rewardUnlocked?: boolean }>;
-  claimReward: (customerId: string, note?: string) => Promise<{ success: boolean; message: string }>;
+  // Mutations (Transactions & POS Caisse)
+  addStamps: (customerId: string, count: number, note?: string, idempotencyKey?: string) => Promise<{ success: boolean; message: string; rewardUnlocked?: boolean }>;
+  addPoints: (customerId: string, points: number, spentAmount?: number, note?: string, idempotencyKey?: string) => Promise<{ success: boolean; message: string; rewardUnlocked?: boolean }>;
+  deductPointsOrStamps: (customerId: string, count: number, reason: string, idempotencyKey?: string) => Promise<{ success: boolean; message: string }>;
+  claimReward: (customerId: string, note?: string, idempotencyKey?: string) => Promise<{ success: boolean; message: string }>;
   manualAdjustBalance: (customerId: string, newBalance: number, reason: string) => Promise<{ success: boolean; message: string }>;
+  findCustomerByScanOrInput: (identifier: string) => { success: boolean; customer: Customer | null; error: string | null };
   updateShopConfig: (shopId: string, partialConfig: Partial<CardConfig>) => void;
   updateShopInfo: (shopId: string, partialShop: Partial<Shop>) => void;
   registerCustomer: (customerData: { firstName: string; lastName: string; phone: string; email: string; referredByCode?: string }) => Customer;
@@ -76,6 +89,8 @@ const STORAGE_KEYS = {
   AUDIT: 'kollekt_audit_logs_v1',
   CAMPAIGNS: 'kollekt_campaigns_v1',
   STAFF: 'kollekt_staff_v1',
+  LOCATIONS: 'kollekt_locations_v1',
+  CURRENT_LOCATION: 'kollekt_current_location_v1',
   CURRENT_SHOP: 'kollekt_current_shop_v1',
   CURRENT_STAFF: 'kollekt_current_staff_v1',
   SELECTED_CUSTOMER: 'kollekt_selected_customer_v1',
@@ -101,6 +116,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>(() => loadStorage(STORAGE_KEYS.AUDIT, INITIAL_AUDIT_LOGS));
   const [campaigns, setCampaigns] = useState<Campaign[]>(() => loadStorage(STORAGE_KEYS.CAMPAIGNS, INITIAL_CAMPAIGNS));
   const [staff, setStaff] = useState<StaffMember[]>(() => loadStorage(STORAGE_KEYS.STAFF, INITIAL_STAFF));
+  const [locations, setLocations] = useState<ShopLocation[]>(() => loadStorage(STORAGE_KEYS.LOCATIONS, INITIAL_LOCATIONS));
+  const [currentLocationId, setCurrentLocationIdState] = useState<string | null>(() => loadStorage(STORAGE_KEYS.CURRENT_LOCATION, null));
 
   const [role, setRoleState] = useState<ActiveRole>(() => loadStorage(STORAGE_KEYS.ROLE, 'merchant'));
   const [currentShopId, setCurrentShopIdState] = useState<string>(() => loadStorage(STORAGE_KEYS.CURRENT_SHOP, 'shop_smash_burger'));
@@ -110,6 +127,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [activeNotification, setActiveNotification] = useState<PushNotificationToast | null>(null);
 
   // Sync state to LocalStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.LOCATIONS, JSON.stringify(locations));
+  }, [locations]);
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.CURRENT_LOCATION, JSON.stringify(currentLocationId));
+  }, [currentLocationId]);
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SHOPS, JSON.stringify(shops));
   }, [shops]);
@@ -139,11 +162,61 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }, [selectedCustomerId]);
 
   const setRole = (newRole: ActiveRole) => setRoleState(newRole);
-  const setCurrentShopId = (id: string) => setCurrentShopIdState(id);
+  const setCurrentShopId = (id: string) => {
+    setCurrentShopIdState(id);
+    setCurrentLocationIdState(null); // Reset location filter when switching shop
+  };
   const setCurrentStaffId = (id: string) => setCurrentStaffIdState(id);
   const setSelectedCustomerId = (id: string) => setSelectedCustomerIdState(id);
+  const setCurrentLocationId = (id: string | null) => setCurrentLocationIdState(id);
 
-  const currentShop = shops.find((s) => s.id === currentShopId) || shops[0];
+  // Détection du commerçant réel authentifié (si actif)
+  let authContext: any = null;
+  try {
+    authContext = useAuth();
+  } catch {
+    authContext = null;
+  }
+  const authMerchant = authContext?.merchant;
+  const activeProgram = authContext?.activeProgram;
+  const activeReward = authContext?.activeReward;
+
+  // Si un commerçant réel est connecté, currentShop pointe EXCLUSIVEMENT vers son entité
+  // Aucune donnée de démonstration (Smash Burger, etc.) ne peut contaminer ses métriques.
+  const currentShop: Shop = useMemo(() => {
+    if (authMerchant) {
+      return {
+        id: authMerchant.id,
+        name: authMerchant.name,
+        slug: authMerchant.slug,
+        category: (authMerchant.category as any) || 'commerce',
+        tagline: 'Votre fidélité récompensée',
+        address: 'Boutique physique',
+        city: 'France',
+        phone: '01 00 00 00 00',
+        instagram: '',
+        openingHours: 'Du mardi au dimanche',
+        logoEmoji: '✨',
+        cardConfig: {
+          mode: (activeProgram?.type as 'stamps' | 'points') || 'stamps',
+          maxStamps: activeProgram?.max_stamps || 8,
+          pointsRatio: activeProgram?.points_per_euro || 1,
+          rewardThreshold: activeProgram?.reward_threshold_points || 100,
+          rewardTitle: activeReward?.title || '1 Récompense fidélité',
+          rewardDescription: 'Offre réservée aux membres fidélité',
+          rewardEstimatedValue: 0,
+          primaryColor: activeProgram?.primary_color || authMerchant.primary_color || '#2C2825',
+          secondaryColor: '#FF765F',
+          textColor: '#F7F4F0',
+          stampIcon: 'star',
+          backNotice: 'Présentez ce pass lors de chaque passage en caisse.',
+          welcomeBonus: 1,
+        },
+      };
+    }
+    return shops.find((s) => s.id === currentShopId) || shops[0];
+  }, [authMerchant, activeProgram, activeReward, shops, currentShopId]);
+
   const currentStaff = staff.find((s) => s.id === currentStaffId) || staff[0];
   const activeCustomer = customers.find((c) => c.id === selectedCustomerId) || customers.find((c) => c.shopId === currentShop.id);
 
@@ -164,126 +237,336 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const dismissNotification = () => setActiveNotification(null);
 
-  // Idempotent Stamp Operation
-  const addStamps = async (customerId: string, count: number, note?: string) => {
+  // Background Wallet Pass sync (resilient, non-blocking)
+  const triggerWalletPassSync = (
+    customerId: string,
+    newBalance: number,
+    mode: 'stamps' | 'points',
+    target: number,
+    rewardTitle: string,
+    isRewardReady: boolean,
+    merchantName: string
+  ) => {
+    fetch('/api/wallet/passes/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cardId: customerId,
+        delta: {
+          mode,
+          newBalance,
+          target,
+          rewardTitle,
+          isRewardReady,
+          merchantName,
+        },
+      }),
+    }).catch((err) => {
+      console.warn('[WalletPass] Background sync postponed (resilience guarantee):', err);
+    });
+  };
+
+  // Idempotent Stamp Operation (with mutex concurrency lock & tenant isolation)
+  const addStamps = async (customerId: string, count: number, note?: string, idempotencyKey?: string) => {
     const cust = customers.find((c) => c.id === customerId);
     if (!cust) return { success: false, message: 'Client introuvable' };
 
-    const idempotencyKey = generateIdempotencyKey('STAMP', customerId);
-    if (!checkAndMarkIdempotent(idempotencyKey)) {
-      return { success: false, message: 'Opération déjà enregistrée (protection anti-double-clic)' };
+    // Multi-tenant check
+    if (cust.shopId !== currentShop.id) {
+      return {
+        success: false,
+        message: 'Carte invalide pour cet établissement : ce client appartient à un autre commerce.',
+      };
     }
 
-    const previousBalance = cust.currentStamps;
-    const max = currentShop.cardConfig.maxStamps;
-    const newBalance = previousBalance + count;
-    const justUnlockedReward = newBalance >= max && previousBalance < max;
-
-    const updatedCustomer: Customer = {
-      ...cust,
-      currentStamps: newBalance,
-      totalVisits: cust.totalVisits + 1,
-      totalRewardsUnlocked: justUnlockedReward ? cust.totalRewardsUnlocked + 1 : cust.totalRewardsUnlocked,
-      lastVisitAt: new Date().toISOString(),
-    };
-
-    const newLog: AuditLogEntry = {
-      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      shopId: currentShop.id,
-      timestamp: new Date().toISOString(),
-      operatorName: currentStaff.name,
-      operatorRole: currentStaff.role,
-      customerId: cust.id,
-      customerName: `${cust.firstName} ${cust.lastName}`,
-      actionType: 'STAMP_ADD',
-      amount: count,
-      previousBalance,
-      newBalance,
-      idempotencyKey,
-      note: note || `+${count} tampon(s) crédité(s) en caisse.`,
-    };
-
-    setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
-    setAuditLogs((prev) => [newLog, ...prev]);
-
-    if (justUnlockedReward) {
-      fireRewardConfetti();
-      triggerSimulatedPush(
-        '🎉 Félicitations ! Votre récompense est prête !',
-        `Vous venez de débloquer : "${currentShop.cardConfig.rewardTitle}". Présentez votre pass lors de votre commande.`
-      );
-    } else {
-      triggerSimulatedPush(
-        `💳 +${count} Tampon ajouté chez ${currentShop.name}`,
-        `Votre solde est désormais de ${newBalance}/${max} tampons.`
-      );
+    // Mutex concurrency lock to prevent two simultaneous requests on the same card
+    if (!acquireOperationLock(customerId)) {
+      return {
+        success: false,
+        message: 'Une opération est déjà en cours sur cette carte. Veuillez patienter.',
+      };
     }
 
-    return {
-      success: true,
-      message: justUnlockedReward ? `Félicitations ! Récompense débloquée (${currentShop.cardConfig.rewardTitle})` : `+${count} tampon(s) validé(s)`,
-      rewardUnlocked: justUnlockedReward,
-    };
+    try {
+      const key = idempotencyKey || generateIdempotencyKey('STAMP', customerId);
+      if (!checkAndMarkIdempotent(key)) {
+        return {
+          success: false,
+          message: 'Opération déjà enregistrée (protection anti-double-clic / idempotence)',
+        };
+      }
+
+      const previousBalance = cust.currentStamps;
+      const max = currentShop.cardConfig.maxStamps;
+      const newBalance = previousBalance + count;
+      const justUnlockedReward = newBalance >= max && previousBalance < max;
+
+      const updatedCustomer: Customer = {
+        ...cust,
+        currentStamps: newBalance,
+        totalVisits: cust.totalVisits + 1,
+        totalRewardsUnlocked: justUnlockedReward ? cust.totalRewardsUnlocked + 1 : cust.totalRewardsUnlocked,
+        lastVisitAt: new Date().toISOString(),
+      };
+
+      const newLog: AuditLogEntry = {
+        id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        shopId: currentShop.id,
+        timestamp: new Date().toISOString(),
+        operatorName: currentStaff.name,
+        operatorRole: currentStaff.role,
+        customerId: cust.id,
+        customerName: `${cust.firstName} ${cust.lastName}`,
+        actionType: 'STAMP_ADD',
+        amount: count,
+        previousBalance,
+        newBalance,
+        idempotencyKey: key,
+        note: note || `+${count} tampon(s) crédité(s) en caisse.`,
+      };
+
+      setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
+      setAuditLogs((prev) => [newLog, ...prev]);
+
+      // Déclenchement de la synchro Wallet en tâche de fond (non bloquant)
+      triggerWalletPassSync(
+        customerId,
+        newBalance,
+        'stamps',
+        max,
+        currentShop.cardConfig.rewardTitle,
+        newBalance >= max,
+        currentShop.name
+      );
+
+      if (justUnlockedReward) {
+        fireRewardConfetti();
+        triggerSimulatedPush(
+          '🎉 Félicitations ! Votre récompense est prête !',
+          `Vous venez de débloquer : "${currentShop.cardConfig.rewardTitle}". Présentez votre pass lors de votre commande.`
+        );
+      } else {
+        triggerSimulatedPush(
+          `💳 +${count} Tampon ajouté chez ${currentShop.name}`,
+          `Votre solde est désormais de ${newBalance}/${max} tampons.`
+        );
+      }
+
+      return {
+        success: true,
+        message: justUnlockedReward
+          ? `Félicitations ! Récompense débloquée (${currentShop.cardConfig.rewardTitle})`
+          : `+${count} tampon(s) validé(s)`,
+        rewardUnlocked: justUnlockedReward,
+      };
+    } finally {
+      releaseOperationLock(customerId);
+    }
   };
 
   // Idempotent Points Operation
-  const addPoints = async (customerId: string, points: number, spentAmount?: number, note?: string) => {
+  const addPoints = async (customerId: string, points: number, spentAmount?: number, note?: string, idempotencyKey?: string) => {
     const cust = customers.find((c) => c.id === customerId);
     if (!cust) return { success: false, message: 'Client introuvable' };
 
-    const idempotencyKey = generateIdempotencyKey('POINT', customerId);
-    if (!checkAndMarkIdempotent(idempotencyKey)) {
-      return { success: false, message: 'Opération déjà enregistrée (protection anti-double-clic)' };
+    // Multi-tenant check
+    if (cust.shopId !== currentShop.id) {
+      return {
+        success: false,
+        message: 'Carte invalide pour cet établissement : ce client appartient à un autre commerce.',
+      };
     }
 
-    const previousBalance = cust.currentPoints;
-    const threshold = currentShop.cardConfig.rewardThreshold;
-    const newBalance = previousBalance + points;
-    const justUnlocked = newBalance >= threshold && previousBalance < threshold;
-
-    const updatedCustomer: Customer = {
-      ...cust,
-      currentPoints: newBalance,
-      totalVisits: cust.totalVisits + 1,
-      totalRewardsUnlocked: justUnlocked ? cust.totalRewardsUnlocked + 1 : cust.totalRewardsUnlocked,
-      lastVisitAt: new Date().toISOString(),
-    };
-
-    const newLog: AuditLogEntry = {
-      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      shopId: currentShop.id,
-      timestamp: new Date().toISOString(),
-      operatorName: currentStaff.name,
-      operatorRole: currentStaff.role,
-      customerId: cust.id,
-      customerName: `${cust.firstName} ${cust.lastName}`,
-      actionType: 'POINT_ADD',
-      amount: points,
-      previousBalance,
-      newBalance,
-      idempotencyKey,
-      note: note || (spentAmount ? `Achat de ${spentAmount.toFixed(2)}€ -> +${points} pts` : `+${points} points ajoutés`),
-    };
-
-    setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
-    setAuditLogs((prev) => [newLog, ...prev]);
-
-    if (justUnlocked) {
-      fireRewardConfetti();
-      triggerSimulatedPush('🎉 Seuil atteint !', `Vous avez atteint ${newBalance} points et pouvez utiliser votre récompense.`);
+    if (!acquireOperationLock(customerId)) {
+      return {
+        success: false,
+        message: 'Une opération est déjà en cours sur cette carte. Veuillez patienter.',
+      };
     }
 
-    return {
-      success: true,
-      message: `+${points} points crédités`,
-      rewardUnlocked: justUnlocked,
-    };
+    try {
+      const key = idempotencyKey || generateIdempotencyKey('POINT', customerId);
+      if (!checkAndMarkIdempotent(key)) {
+        return {
+          success: false,
+          message: 'Opération déjà enregistrée (protection anti-double-clic / idempotence)',
+        };
+      }
+
+      const previousBalance = cust.currentPoints;
+      const threshold = currentShop.cardConfig.rewardThreshold;
+      const newBalance = previousBalance + points;
+      const justUnlocked = newBalance >= threshold && previousBalance < threshold;
+
+      const updatedCustomer: Customer = {
+        ...cust,
+        currentPoints: newBalance,
+        totalVisits: cust.totalVisits + 1,
+        totalRewardsUnlocked: justUnlocked ? cust.totalRewardsUnlocked + 1 : cust.totalRewardsUnlocked,
+        lastVisitAt: new Date().toISOString(),
+      };
+
+      const newLog: AuditLogEntry = {
+        id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        shopId: currentShop.id,
+        timestamp: new Date().toISOString(),
+        operatorName: currentStaff.name,
+        operatorRole: currentStaff.role,
+        customerId: cust.id,
+        customerName: `${cust.firstName} ${cust.lastName}`,
+        actionType: 'POINT_ADD',
+        amount: points,
+        previousBalance,
+        newBalance,
+        idempotencyKey: key,
+        note: note || (spentAmount ? `Achat de ${spentAmount.toFixed(2)}€ -> +${points} pts` : `+${points} points ajoutés`),
+      };
+
+      setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
+      setAuditLogs((prev) => [newLog, ...prev]);
+
+      // Déclenchement de la synchro Wallet en tâche de fond (non bloquant)
+      triggerWalletPassSync(
+        customerId,
+        newBalance,
+        'points',
+        threshold,
+        currentShop.cardConfig.rewardTitle,
+        newBalance >= threshold,
+        currentShop.name
+      );
+
+      if (justUnlocked) {
+        fireRewardConfetti();
+        triggerSimulatedPush('🎉 Seuil atteint !', `Vous avez atteint ${newBalance} points et pouvez utiliser votre récompense.`);
+      }
+
+      return {
+        success: true,
+        message: `+${points} points crédités`,
+        rewardUnlocked: justUnlocked,
+      };
+    } finally {
+      releaseOperationLock(customerId);
+    }
   };
 
-  // Claim Reward Operation
-  const claimReward = async (customerId: string, note?: string) => {
+  // Deduct Stamps or Points with MANDATORY REASON
+  const deductPointsOrStamps = async (
+    customerId: string,
+    count: number,
+    reason: string,
+    idempotencyKey?: string
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!reason || reason.trim().length < 3) {
+      return {
+        success: false,
+        message: 'Un motif justificatif explicite (minimum 3 caractères) est obligatoire pour tout retrait de points ou tampons.',
+      };
+    }
+
+    if (count <= 0) {
+      return {
+        success: false,
+        message: 'Le montant du retrait doit être supérieur à 0.',
+      };
+    }
+
     const cust = customers.find((c) => c.id === customerId);
     if (!cust) return { success: false, message: 'Client introuvable' };
+
+    // Multi-tenant isolation check
+    if (cust.shopId !== currentShop.id) {
+      return {
+        success: false,
+        message: 'Carte invalide pour cet établissement : ce client appartient à un autre commerce.',
+      };
+    }
+
+    if (!acquireOperationLock(customerId)) {
+      return {
+        success: false,
+        message: 'Une opération est déjà en cours sur cette carte. Veuillez patienter.',
+      };
+    }
+
+    try {
+      const key = idempotencyKey || generateIdempotencyKey('DEDUCT', customerId);
+      if (!checkAndMarkIdempotent(key)) {
+        return {
+          success: false,
+          message: 'Opération déjà enregistrée (protection anti-double-clic / idempotence)',
+        };
+      }
+
+      const mode = currentShop.cardConfig.mode;
+      const previousBalance = mode === 'stamps' ? cust.currentStamps : cust.currentPoints;
+
+      if (previousBalance < count) {
+        return {
+          success: false,
+          message: `Solde insuffisant pour ce retrait. Solde actuel : ${previousBalance} ${mode === 'stamps' ? 'tampons' : 'points'}.`,
+        };
+      }
+
+      const newBalance = previousBalance - count;
+      const updatedCustomer: Customer = {
+        ...cust,
+        currentStamps: mode === 'stamps' ? newBalance : cust.currentStamps,
+        currentPoints: mode === 'points' ? newBalance : cust.currentPoints,
+      };
+
+      const newLog: AuditLogEntry = {
+        id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        shopId: currentShop.id,
+        timestamp: new Date().toISOString(),
+        operatorName: currentStaff.name,
+        operatorRole: currentStaff.role,
+        customerId: cust.id,
+        customerName: `${cust.firstName} ${cust.lastName}`,
+        actionType: mode === 'stamps' ? 'STAMP_REMOVE' : 'POINT_REMOVE',
+        amount: count,
+        previousBalance,
+        newBalance,
+        idempotencyKey: key,
+        note: `Retrait motif : ${reason.trim()}`,
+      };
+
+      setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
+      setAuditLogs((prev) => [newLog, ...prev]);
+
+      // Déclenchement de la synchro Wallet en tâche de fond (non bloquant)
+      triggerWalletPassSync(
+        customerId,
+        newBalance,
+        mode,
+        mode === 'stamps' ? currentShop.cardConfig.maxStamps : currentShop.cardConfig.rewardThreshold,
+        currentShop.cardConfig.rewardTitle,
+        mode === 'stamps' ? newBalance >= currentShop.cardConfig.maxStamps : newBalance >= currentShop.cardConfig.rewardThreshold,
+        currentShop.name
+      );
+
+      return {
+        success: true,
+        message: `Retrait de ${count} ${mode === 'stamps' ? 'tampon(s)' : 'point(s)'} validé. Nouveau solde : ${newBalance}.`,
+      };
+    } finally {
+      releaseOperationLock(customerId);
+    }
+  };
+
+  // Claim Reward Operation (requires sufficient balance, with idempotency & lock)
+  const claimReward = async (customerId: string, note?: string, idempotencyKey?: string) => {
+    const cust = customers.find((c) => c.id === customerId);
+    if (!cust) return { success: false, message: 'Client introuvable' };
+
+    // Multi-tenant check
+    if (cust.shopId !== currentShop.id) {
+      return {
+        success: false,
+        message: 'Carte invalide pour cet établissement : ce client appartient à un autre commerce.',
+      };
+    }
 
     const mode = currentShop.cardConfig.mode;
     const isEligible =
@@ -292,51 +575,135 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         : cust.currentPoints >= currentShop.cardConfig.rewardThreshold;
 
     if (!isEligible) {
-      return { success: false, message: 'Le client n’a pas atteint le solde requis pour cette récompense.' };
+      return {
+        success: false,
+        message: 'Le client n’a pas atteint le solde requis pour cette récompense.',
+      };
     }
 
-    const idempotencyKey = generateIdempotencyKey('CLAIM', customerId);
-    if (!checkAndMarkIdempotent(idempotencyKey)) {
-      return { success: false, message: 'Cette récompense a déjà été validée (sécurité anti-doublon).' };
+    if (!acquireOperationLock(customerId)) {
+      return {
+        success: false,
+        message: 'Une opération est déjà en cours sur cette carte. Veuillez patienter.',
+      };
     }
 
-    const previousBalance = mode === 'stamps' ? cust.currentStamps : cust.currentPoints;
-    const newBalance =
-      mode === 'stamps'
-        ? Math.max(0, cust.currentStamps - currentShop.cardConfig.maxStamps)
-        : Math.max(0, cust.currentPoints - currentShop.cardConfig.rewardThreshold);
+    try {
+      const key = idempotencyKey || generateIdempotencyKey('CLAIM', customerId);
+      if (!checkAndMarkIdempotent(key)) {
+        return {
+          success: false,
+          message: 'Cette récompense a déjà été validée (sécurité anti-doublon).',
+        };
+      }
 
-    const updatedCustomer: Customer = {
-      ...cust,
-      currentStamps: mode === 'stamps' ? newBalance : cust.currentStamps,
-      currentPoints: mode === 'points' ? newBalance : cust.currentPoints,
-      totalRewardsClaimed: cust.totalRewardsClaimed + 1,
-      lastVisitAt: new Date().toISOString(),
+      const previousBalance = mode === 'stamps' ? cust.currentStamps : cust.currentPoints;
+      const newBalance =
+        mode === 'stamps'
+          ? Math.max(0, cust.currentStamps - currentShop.cardConfig.maxStamps)
+          : Math.max(0, cust.currentPoints - currentShop.cardConfig.rewardThreshold);
+
+      const updatedCustomer: Customer = {
+        ...cust,
+        currentStamps: mode === 'stamps' ? newBalance : cust.currentStamps,
+        currentPoints: mode === 'points' ? newBalance : cust.currentPoints,
+        totalRewardsClaimed: cust.totalRewardsClaimed + 1,
+        lastVisitAt: new Date().toISOString(),
+      };
+
+      const newLog: AuditLogEntry = {
+        id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        shopId: currentShop.id,
+        timestamp: new Date().toISOString(),
+        operatorName: currentStaff.name,
+        operatorRole: currentStaff.role,
+        customerId: cust.id,
+        customerName: `${cust.firstName} ${cust.lastName}`,
+        actionType: 'REWARD_CLAIM',
+        amount: mode === 'stamps' ? currentShop.cardConfig.maxStamps : currentShop.cardConfig.rewardThreshold,
+        previousBalance,
+        newBalance,
+        idempotencyKey: key,
+        note: note || `Récompense utilisée : ${currentShop.cardConfig.rewardTitle}`,
+      };
+
+      setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
+      setAuditLogs((prev) => [newLog, ...prev]);
+
+      // Déclenchement de la synchro Wallet en tâche de fond (non bloquant)
+      triggerWalletPassSync(
+        customerId,
+        newBalance,
+        mode,
+        mode === 'stamps' ? currentShop.cardConfig.maxStamps : currentShop.cardConfig.rewardThreshold,
+        currentShop.cardConfig.rewardTitle,
+        false,
+        currentShop.name
+      );
+
+      fireRewardConfetti();
+      triggerSimulatedPush('🎁 Récompense validée avec succès !', `Profitez de votre ${currentShop.cardConfig.rewardTitle}. Merci pour votre fidélité !`);
+
+      return { success: true, message: `Récompense "${currentShop.cardConfig.rewardTitle}" validée avec succès !` };
+    } finally {
+      releaseOperationLock(customerId);
+    }
+  };
+
+  // Find customer by scanned QR token, passId, phone, or URL (Strict multi-tenant isolation)
+  const findCustomerByScanOrInput = (rawInput: string) => {
+    const query = rawInput.trim();
+    if (!query) {
+      return {
+        success: false,
+        customer: null,
+        error: 'Veuillez saisir ou scanner un identifiant client.',
+      };
+    }
+
+    // Clean if URL was scanned
+    let clean = query;
+    if (clean.includes('token=')) {
+      const match = clean.match(/token=([^&#]+)/);
+      if (match) clean = match[1];
+    } else if (clean.includes('/c/')) {
+      clean = clean.replace(/^.*\/c\//, '').split('?')[0];
+    }
+
+    // Search across ALL customers to detect if it belongs to another shop
+    const allMatch = customers.find((c) => {
+      const phoneClean = c.phone.replace(/[^0-9+]/g, '');
+      const inputClean = clean.replace(/[^0-9+]/g, '');
+      return (
+        (c.qrToken && c.qrToken.toLowerCase() === clean.toLowerCase()) ||
+        c.passId.toLowerCase() === clean.toLowerCase() ||
+        (inputClean.length >= 8 && phoneClean.includes(inputClean)) ||
+        (clean.length >= 3 && `${c.firstName} ${c.lastName}`.toLowerCase().includes(clean.toLowerCase()))
+      );
+    });
+
+    if (!allMatch) {
+      return {
+        success: false,
+        customer: null,
+        error: 'Aucune carte trouvée pour cet identifiant ou QR code.',
+      };
+    }
+
+    // Strict multi-tenant isolation
+    if (allMatch.shopId !== currentShop.id) {
+      return {
+        success: false,
+        customer: null,
+        error: 'Carte invalide pour cet établissement : ce client appartient à un autre commerce.',
+      };
+    }
+
+    return {
+      success: true,
+      customer: allMatch,
+      error: null,
     };
-
-    const newLog: AuditLogEntry = {
-      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
-      shopId: currentShop.id,
-      timestamp: new Date().toISOString(),
-      operatorName: currentStaff.name,
-      operatorRole: currentStaff.role,
-      customerId: cust.id,
-      customerName: `${cust.firstName} ${cust.lastName}`,
-      actionType: 'REWARD_CLAIM',
-      amount: mode === 'stamps' ? currentShop.cardConfig.maxStamps : currentShop.cardConfig.rewardThreshold,
-      previousBalance,
-      newBalance,
-      idempotencyKey,
-      note: note || `Récompense utilisée : ${currentShop.cardConfig.rewardTitle}`,
-    };
-
-    setCustomers((prev) => prev.map((c) => (c.id === customerId ? updatedCustomer : c)));
-    setAuditLogs((prev) => [newLog, ...prev]);
-
-    fireRewardConfetti();
-    triggerSimulatedPush('🎁 Récompense validée avec succès !', `Profitez de votre ${currentShop.cardConfig.rewardTitle}. Merci pour votre fidélité !`);
-
-    return { success: true, message: `Récompense "${currentShop.cardConfig.rewardTitle}" validée avec succès !` };
   };
 
   // Manual adjustment by Admin with strict audit log
@@ -614,6 +981,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setAuditLogs(INITIAL_AUDIT_LOGS);
     setCampaigns(INITIAL_CAMPAIGNS);
     setStaff(INITIAL_STAFF);
+    setLocations(INITIAL_LOCATIONS);
+    setCurrentLocationIdState(null);
     setCurrentShopId('shop_smash_burger');
     setCurrentStaffId('staff_02');
     setSelectedCustomerId('cust_lucas_martin');
@@ -639,10 +1008,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         auditLogs,
         campaigns,
         staff,
+        locations,
+        currentLocationId,
+        setCurrentLocationId,
         addStamps,
         addPoints,
+        deductPointsOrStamps,
         claimReward,
         manualAdjustBalance,
+        findCustomerByScanOrInput,
         updateShopConfig,
         updateShopInfo,
         registerCustomer,

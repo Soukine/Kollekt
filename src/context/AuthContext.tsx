@@ -18,6 +18,7 @@ interface AuthContextType {
   isOnboarded: boolean;
   currentStep: number;
   error: string | null;
+  isPasswordRecovery: boolean;
 
   // Actions
   signUp: (input: SignUpInput) => Promise<{ success: boolean; error?: string; requireEmailConfirmation?: boolean }>;
@@ -25,6 +26,9 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   setCurrentStep: (step: number) => void;
   clearError: () => void;
+  requestPasswordReset: (email: string) => Promise<{ success: boolean; error?: string }>;
+  updatePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  cancelPasswordRecovery: () => void;
 
   // Onboarding Step Handlers
   submitStep1: (input: Step1Input) => Promise<{ success: boolean; error?: string }>;
@@ -49,8 +53,21 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [error, setError] = useState<string | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const hash = window.location.hash || '';
+      return hash.includes('type=recovery') || window.location.search.includes('type=recovery');
+    }
+    return false;
+  });
 
   const clearError = () => setError(null);
+  const cancelPasswordRecovery = () => {
+    setIsPasswordRecovery(false);
+    if (typeof window !== 'undefined' && window.location.hash.includes('type=recovery')) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  };
 
   // Helper to load merchant & member association
   const loadUserMerchant = async (userId: string) => {
@@ -129,9 +146,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // 2. Listen to auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       setSession(newSession);
       setUser(newSession?.user ?? null);
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true);
+      }
       if (newSession?.user) {
         await loadUserMerchant(newSession.user.id);
       } else {
@@ -151,6 +171,66 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const refreshMerchantData = async () => {
     if (user) {
       await loadUserMerchant(user.id);
+    }
+  };
+
+  // Demande de réinitialisation de mot de passe par email
+  const requestPasswordReset = async (email: string) => {
+    setError(null);
+    try {
+      const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}` : undefined;
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: redirectUrl,
+      });
+
+      if (resetErr) {
+        const msg = resetErr.message.includes('rate limit')
+          ? 'Trop de tentatives. Veuillez patienter quelques instants avant de réessayer.'
+          : resetErr.message || 'Impossible d\'envoyer l\'email de réinitialisation.';
+        setError(msg);
+        return { success: false, error: msg };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      const msg = err?.message || 'Erreur lors de la demande de réinitialisation.';
+      setError(msg);
+      return { success: false, error: msg };
+    }
+  };
+
+  // Enregistrement du nouveau mot de passe
+  const updatePassword = async (newPassword: string) => {
+    setError(null);
+    try {
+      if (!newPassword || newPassword.length < 8) {
+        const msg = 'Le nouveau mot de passe doit comporter au moins 8 caractères.';
+        setError(msg);
+        return { success: false, error: msg };
+      }
+
+      const { error: updateErr } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updateErr) {
+        const msg = updateErr.message.includes('Password should be')
+          ? 'Le mot de passe doit comporter au moins 8 caractères.'
+          : updateErr.message || 'Erreur lors de la mise à jour du mot de passe.';
+        setError(msg);
+        return { success: false, error: msg };
+      }
+
+      setIsPasswordRecovery(false);
+      if (typeof window !== 'undefined' && window.location.hash.includes('type=recovery')) {
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      const msg = err?.message || 'Erreur lors de la mise à jour du mot de passe.';
+      setError(msg);
+      return { success: false, error: msg };
     }
   };
 
@@ -538,11 +618,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         isOnboarded,
         currentStep,
         error,
+        isPasswordRecovery,
         signUp,
         signIn,
         signOut,
         setCurrentStep,
         clearError,
+        requestPasswordReset,
+        updatePassword,
+        cancelPasswordRecovery,
         submitStep1,
         submitStep2,
         submitStep3,

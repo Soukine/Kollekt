@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Customer, Shop } from '../../types';
 import { useApp } from '../../context/AppContext';
-import { X, Check, ShieldCheck, Zap, Bell, Download, Smartphone } from 'lucide-react';
+import { Check, ShieldCheck, Zap, Bell, Download, Smartphone, Loader2, ExternalLink, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface WalletAddModalProps {
@@ -10,6 +10,14 @@ interface WalletAddModalProps {
   type: 'apple' | 'google';
   customer: Customer;
   shop: Shop;
+}
+
+interface ServerPassInfo {
+  applePassUrl?: string;
+  googleWalletUrl?: string;
+  universalInstallUrl?: string;
+  syncStatus?: 'pending' | 'synced' | 'failed' | 'retrying';
+  retryCount?: number;
 }
 
 export const WalletAddModal: React.FC<WalletAddModalProps> = ({
@@ -21,14 +29,90 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
 }) => {
   const { installWalletPass } = useApp();
   const [isAdded, setIsAdded] = useState(false);
-
-  if (!isOpen) return null;
+  const [isLoading, setIsLoading] = useState(false);
+  const [serverPass, setServerPass] = useState<ServerPassInfo | null>(null);
 
   const isApple = type === 'apple';
+
+  // Charger ou créer le pass côté serveur
+  useEffect(() => {
+    if (!isOpen || !customer) return;
+
+    let isMounted = true;
+    setIsLoading(true);
+
+    const isStamps = shop.cardConfig.mode === 'stamps';
+    const balance = isStamps ? customer.currentStamps : customer.currentPoints;
+    const target = isStamps ? shop.cardConfig.maxStamps : shop.cardConfig.rewardThreshold;
+    const isRewardReady = balance >= target;
+
+    fetch('/api/wallet/passes/get-or-create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        merchantId: shop.id,
+        design: {
+          merchantName: shop.name,
+          logoEmoji: shop.logoEmoji,
+          primaryColor: shop.cardConfig.primaryColor,
+          secondaryColor: shop.cardConfig.secondaryColor,
+          textColor: shop.cardConfig.textColor,
+          programName: `${shop.name} Fidélité`,
+          termsNotice: shop.cardConfig.backNotice,
+        },
+        data: {
+          loyaltyCardId: customer.id,
+          serialNumber: customer.passId,
+          qrToken: customer.qrToken || customer.passId,
+          customerFirstName: customer.firstName,
+          customerLastName: customer.lastName,
+          mode: shop.cardConfig.mode,
+          balance,
+          target,
+          rewardTitle: shop.cardConfig.rewardTitle,
+          isRewardReady,
+        },
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data) {
+          setServerPass({
+            applePassUrl: data.applePassUrl,
+            googleWalletUrl: data.googleWalletUrl,
+            universalInstallUrl: data.universalInstallUrl,
+            syncStatus: data.syncStatus,
+            retryCount: data.retryCount,
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Wallet endpoint offline or local dev, using client fallback:', err);
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, customer, shop]);
+
+  if (!isOpen) return null;
 
   const handleConfirmAdd = () => {
     installWalletPass(customer.id, type);
     setIsAdded(true);
+
+    const targetUrl = isApple
+      ? serverPass?.applePassUrl
+      : serverPass?.googleWalletUrl;
+
+    if (targetUrl && !targetUrl.includes('example.com')) {
+      // Ouvre le lien Wallet sans alertes bloquantes
+      window.location.assign(targetUrl);
+    }
+
     setTimeout(() => {
       setIsAdded(false);
       onClose();
@@ -47,9 +131,9 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
       backgroundColor: shop.cardConfig.primaryColor,
       labelColor: '#A9A39D',
       barcode: {
-        message: customer.passId,
+        message: customer.qrToken || customer.passId,
         format: 'PKBarcodeFormatQR',
-        messageEncoding: 'iso-8859-1',
+        altText: 'Présentez ce code lors de votre commande',
       },
       generic: {
         primaryFields: [
@@ -128,7 +212,7 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
             </div>
             <button
               onClick={handleConfirmAdd}
-              disabled={isAdded}
+              disabled={isAdded || isLoading}
               className={`text-xs font-bold transition-colors ${
                 isAdded
                   ? 'text-[#8BE3A2]'
@@ -142,7 +226,27 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
           </div>
 
           {/* Modal Content */}
-          <div className="p-6 overflow-y-auto space-y-6">
+          <div className="p-6 overflow-y-auto space-y-5">
+            {/* Sync status indicator */}
+            <div className="flex items-center justify-between text-xs px-3 py-2 rounded-xl bg-white/5 border border-white/10">
+              <span className="text-[#A9A39D]">État du pass serveur :</span>
+              {isLoading ? (
+                <span className="text-[#FF765F] flex items-center gap-1.5 font-medium">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Génération...
+                </span>
+              ) : serverPass?.syncStatus === 'retrying' ? (
+                <span className="text-amber-400 font-medium flex items-center gap-1">
+                  En attente de connexion (sécurisé)
+                </span>
+              ) : (
+                <span className="text-[#8BE3A2] font-semibold flex items-center gap-1">
+                  <Check className="w-3.5 h-3.5" />
+                  Pass prêt & synchronisé
+                </span>
+              )}
+            </div>
+
             {/* Visual Pass Preview Card */}
             <div
               className="p-5 rounded-2xl shadow-lg border border-white/10 relative overflow-hidden text-[#F7F4F0]"
@@ -189,7 +293,7 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
             </div>
 
             {/* Value Proposition bullets */}
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <h5 className="text-xs uppercase font-bold text-[#A9A39D] tracking-wider">
                 Avantages du pass sans application
               </h5>
@@ -217,7 +321,7 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
                     Mise à jour en temps réel
                   </p>
                   <p className="text-[11px] text-[#A9A39D] mt-0.5">
-                    À chaque achat en caisse, votre solde de tampons s'actualise instantanément sur votre pass.
+                    À chaque achat en caisse, votre solde de tampons s'actualise automatiquement sur votre pass.
                   </p>
                 </div>
               </div>
@@ -237,11 +341,19 @@ export const WalletAddModal: React.FC<WalletAddModalProps> = ({
               </div>
             </div>
 
+            {/* Disclaimer explicite sur les notifications */}
+            <div className="p-3 rounded-xl bg-white/5 border border-white/10 flex items-start gap-2.5 text-[11px] text-[#A9A39D]">
+              <Info className="w-4 h-4 text-[#A9A39D] shrink-0 mt-0.5" />
+              <span>
+                Les notifications sur l'écran verrouillé dépendent des réglages de notifications et du mode d'économie d'énergie de votre appareil Apple ou Android.
+              </span>
+            </div>
+
             {/* Action buttons */}
-            <div className="space-y-2 pt-2">
+            <div className="space-y-2 pt-1">
               <button
                 onClick={handleConfirmAdd}
-                disabled={isAdded}
+                disabled={isAdded || isLoading}
                 className="w-full py-3.5 px-4 rounded-2xl bg-[#FF765F] hover:bg-[#ff5e42] text-[#211D1A] font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#FF765F]/20 transition-all cursor-pointer"
               >
                 {isAdded ? (

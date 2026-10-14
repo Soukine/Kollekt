@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { signUpSchema, signInSchema } from '../../lib/validations/auth';
 import {
@@ -6,30 +6,56 @@ import {
   Mail,
   User,
   ArrowRight,
+  ArrowLeft,
   AlertCircle,
   CheckCircle2,
-  Sparkles,
+  KeyRound,
   ShieldCheck,
   Smartphone,
 } from 'lucide-react';
 
 export const AuthPage: React.FC = () => {
-  const { signUp, signIn, error: authError, clearError } = useAuth();
+  const {
+    signUp,
+    signIn,
+    error: authError,
+    clearError,
+    isPasswordRecovery,
+    requestPasswordReset,
+    updatePassword,
+    cancelPasswordRecovery,
+  } = useAuth();
 
-  const [mode, setMode] = useState<'signin' | 'signup'>('signup');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot' | 'reset'>('signup');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmationNotice, setConfirmationNotice] = useState(false);
+  const [forgotSentNotice, setForgotSentNotice] = useState(false);
+  const [resetSuccessNotice, setResetSuccessNotice] = useState(false);
 
-  const toggleMode = (newMode: 'signin' | 'signup') => {
+  // Synchronisation automatique si Supabase détecte un lien de réinitialisation
+  useEffect(() => {
+    if (isPasswordRecovery) {
+      setMode('reset');
+      clearError();
+    }
+  }, [isPasswordRecovery, clearError]);
+
+  const toggleMode = (newMode: 'signin' | 'signup' | 'forgot' | 'reset') => {
     setMode(newMode);
     clearError();
     setFieldErrors({});
     setConfirmationNotice(false);
+    setForgotSentNotice(false);
+    setResetSuccessNotice(false);
+    if (newMode !== 'reset' && isPasswordRecovery) {
+      cancelPasswordRecovery();
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -63,7 +89,7 @@ export const AuthPage: React.FC = () => {
         if (res.requireEmailConfirmation) {
           setConfirmationNotice(true);
         }
-      } else {
+      } else if (mode === 'signin') {
         const validation = signInSchema.safeParse({
           email,
           password,
@@ -82,6 +108,33 @@ export const AuthPage: React.FC = () => {
         }
 
         await signIn(validation.data);
+      } else if (mode === 'forgot') {
+        if (!email || !email.includes('@')) {
+          setFieldErrors({ email: 'Veuillez renseigner une adresse email valide.' });
+          setIsSubmitting(false);
+          return;
+        }
+
+        const res = await requestPasswordReset(email);
+        if (res.success) {
+          setForgotSentNotice(true);
+        }
+      } else if (mode === 'reset') {
+        if (!password || password.length < 8) {
+          setFieldErrors({ password: 'Le mot de passe doit comporter au moins 8 caractères.' });
+          setIsSubmitting(false);
+          return;
+        }
+        if (password !== confirmPassword) {
+          setFieldErrors({ confirmPassword: 'Les deux mots de passe ne correspondent pas.' });
+          setIsSubmitting(false);
+          return;
+        }
+
+        const res = await updatePassword(password);
+        if (res.success) {
+          setResetSuccessNotice(true);
+        }
       }
     } finally {
       setIsSubmitting(false);
@@ -105,33 +158,71 @@ export const AuthPage: React.FC = () => {
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md px-4">
         <div className="bg-[#2C2825] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
-          {/* Tab switcher: Inscription / Connexion */}
-          <div className="bg-[#211D1A] p-1 rounded-2xl border border-white/10 grid grid-cols-2 gap-1 text-xs font-bold">
-            <button
-              type="button"
-              onClick={() => toggleMode('signup')}
-              className={`py-2.5 rounded-xl transition-all cursor-pointer ${
-                mode === 'signup'
-                  ? 'bg-[#FF765F] text-[#211D1A] shadow-md shadow-[#FF765F]/20'
-                  : 'text-[#A9A39D] hover:text-[#F7F4F0]'
-              }`}
-            >
-              Créer mon compte
-            </button>
-            <button
-              type="button"
-              onClick={() => toggleMode('signin')}
-              className={`py-2.5 rounded-xl transition-all cursor-pointer ${
-                mode === 'signin'
-                  ? 'bg-[#FF765F] text-[#211D1A] shadow-md shadow-[#FF765F]/20'
-                  : 'text-[#A9A39D] hover:text-[#F7F4F0]'
-              }`}
-            >
-              Se connecter
-            </button>
-          </div>
+          {/* Tab switcher: Inscription / Connexion (masqué en mode reset ou mot de passe oublié) */}
+          {mode !== 'forgot' && mode !== 'reset' && (
+            <div className="bg-[#211D1A] p-1 rounded-2xl border border-white/10 grid grid-cols-2 gap-1 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => toggleMode('signup')}
+                className={`py-2.5 rounded-xl transition-all cursor-pointer ${
+                  mode === 'signup'
+                    ? 'bg-[#FF765F] text-[#211D1A] shadow-md shadow-[#FF765F]/20'
+                    : 'text-[#A9A39D] hover:text-[#F7F4F0]'
+                }`}
+              >
+                Créer mon compte
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleMode('signin')}
+                className={`py-2.5 rounded-xl transition-all cursor-pointer ${
+                  mode === 'signin'
+                    ? 'bg-[#FF765F] text-[#211D1A] shadow-md shadow-[#FF765F]/20'
+                    : 'text-[#A9A39D] hover:text-[#F7F4F0]'
+                }`}
+              >
+                Se connecter
+              </button>
+            </div>
+          )}
 
-          {/* Email Confirmation Notice */}
+          {/* En-tête mode Mot de passe oublié */}
+          {mode === 'forgot' && !forgotSentNotice && (
+            <div className="flex items-center justify-between border-b border-white/10 pb-4">
+              <div>
+                <h2 className="text-base font-bold text-[#F7F4F0] flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-[#FF765F]" />
+                  <span>Réinitialisation du mot de passe</span>
+                </h2>
+                <p className="text-xs text-[#A9A39D] mt-1">
+                  Recevez un lien sécurisé pour définir un nouveau mot de passe.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => toggleMode('signin')}
+                className="text-xs text-[#A9A39D] hover:text-[#F7F4F0] flex items-center gap-1 cursor-pointer"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Retour</span>
+              </button>
+            </div>
+          )}
+
+          {/* En-tête mode Nouveau mot de passe (retour de lien) */}
+          {mode === 'reset' && !resetSuccessNotice && (
+            <div className="border-b border-white/10 pb-4">
+              <h2 className="text-base font-bold text-[#F7F4F0] flex items-center gap-2">
+                <Lock className="w-4 h-4 text-[#8BE3A2]" />
+                <span>Définir votre nouveau mot de passe</span>
+              </h2>
+              <p className="text-xs text-[#A9A39D] mt-1">
+                Choisissez un mot de passe robuste d'au moins 8 caractères.
+              </p>
+            </div>
+          )}
+
+          {/* Email Confirmation Notice (après inscription) */}
           {confirmationNotice ? (
             <div className="p-4 rounded-2xl bg-[#8BE3A2]/15 border border-[#8BE3A2]/40 text-left space-y-2">
               <div className="flex items-center gap-2 text-[#8BE3A2] font-bold text-sm">
@@ -143,9 +234,44 @@ export const AuthPage: React.FC = () => {
               </p>
               <button
                 onClick={() => toggleMode('signin')}
-                className="mt-2 text-xs font-bold text-[#8BE3A2] underline hover:opacity-80 block"
+                className="mt-2 text-xs font-bold text-[#8BE3A2] underline hover:opacity-80 block cursor-pointer"
               >
                 Retourner à la connexion
+              </button>
+            </div>
+          ) : forgotSentNotice ? (
+            /* Confirmation envoi email de réinitialisation */
+            <div className="p-4 rounded-2xl bg-[#8BE3A2]/15 border border-[#8BE3A2]/40 text-left space-y-2">
+              <div className="flex items-center gap-2 text-[#8BE3A2] font-bold text-sm">
+                <CheckCircle2 className="w-5 h-5 shrink-0" />
+                <span>Lien de réinitialisation envoyé</span>
+              </div>
+              <p className="text-xs text-[#F7F4F0] leading-relaxed">
+                Si un compte existe pour <b className="text-white">{email}</b>, vous allez recevoir un e-mail avec un lien direct pour redéfinir votre mot de passe.
+              </p>
+              <button
+                onClick={() => toggleMode('signin')}
+                className="mt-2 text-xs font-bold text-[#8BE3A2] underline hover:opacity-80 block cursor-pointer"
+              >
+                Retourner à la connexion
+              </button>
+            </div>
+          ) : resetSuccessNotice ? (
+            /* Confirmation succès de la mise à jour du mot de passe */
+            <div className="p-4 rounded-2xl bg-[#8BE3A2]/15 border border-[#8BE3A2]/40 text-left space-y-2">
+              <div className="flex items-center gap-2 text-[#8BE3A2] font-bold text-sm">
+                <CheckCircle2 className="w-5 h-5 shrink-0" />
+                <span>Mot de passe mis à jour avec succès</span>
+              </div>
+              <p className="text-xs text-[#F7F4F0] leading-relaxed">
+                Votre nouveau mot de passe est immédiatement actif. Vous pouvez maintenant accéder à votre compte.
+              </p>
+              <button
+                onClick={() => toggleMode('signin')}
+                className="mt-3 w-full py-2.5 px-4 rounded-xl bg-[#8BE3A2] text-[#1C1816] font-bold text-xs hover:bg-[#a0ecb4] transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <span>Accéder à mon espace commerçant</span>
+                <ArrowRight className="w-4 h-4" />
               </button>
             </div>
           ) : (
@@ -208,55 +334,99 @@ export const AuthPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Email */}
-              <div>
-                <label className="text-[11px] uppercase font-bold text-[#A9A39D] block mb-1">
-                  Adresse e-mail professionnelle *
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-[#A9A39D] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="email"
-                    required
-                    placeholder="contact@moncommerce.fr"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className={`w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#211D1A] border text-xs text-[#F7F4F0] focus:outline-none focus:border-[#FF765F] transition-colors ${
-                      fieldErrors.email ? 'border-red-500' : 'border-white/10'
-                    }`}
-                  />
+              {/* Email (modes signup, signin, forgot) */}
+              {mode !== 'reset' && (
+                <div>
+                  <label className="text-[11px] uppercase font-bold text-[#A9A39D] block mb-1">
+                    Adresse e-mail professionnelle *
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-[#A9A39D] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="email"
+                      required
+                      placeholder="contact@moncommerce.fr"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className={`w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#211D1A] border text-xs text-[#F7F4F0] focus:outline-none focus:border-[#FF765F] transition-colors ${
+                        fieldErrors.email ? 'border-red-500' : 'border-white/10'
+                      }`}
+                    />
+                  </div>
+                  {fieldErrors.email && (
+                    <span className="text-[10px] text-red-400 mt-1 block">
+                      {fieldErrors.email}
+                    </span>
+                  )}
                 </div>
-                {fieldErrors.email && (
-                  <span className="text-[10px] text-red-400 mt-1 block">
-                    {fieldErrors.email}
-                  </span>
-                )}
-              </div>
+              )}
 
-              {/* Password */}
-              <div>
-                <label className="text-[11px] uppercase font-bold text-[#A9A39D] block mb-1">
-                  Mot de passe {mode === 'signup' && '(min. 8 caractères)'} *
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-[#A9A39D] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    type="password"
-                    required
-                    placeholder="••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className={`w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#211D1A] border text-xs text-[#F7F4F0] focus:outline-none focus:border-[#FF765F] transition-colors ${
-                      fieldErrors.password ? 'border-red-500' : 'border-white/10'
-                    }`}
-                  />
+              {/* Password (modes signup, signin, reset) */}
+              {mode !== 'forgot' && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] uppercase font-bold text-[#A9A39D] block">
+                      {mode === 'reset'
+                        ? 'Nouveau mot de passe (min. 8 caractères) *'
+                        : `Mot de passe ${mode === 'signup' ? '(min. 8 caractères)' : ''} *`}
+                    </label>
+                    {mode === 'signin' && (
+                      <button
+                        type="button"
+                        onClick={() => toggleMode('forgot')}
+                        className="text-[11px] text-[#FF765F] hover:underline cursor-pointer"
+                      >
+                        Mot de passe oublié ?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-[#A9A39D] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className={`w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#211D1A] border text-xs text-[#F7F4F0] focus:outline-none focus:border-[#FF765F] transition-colors ${
+                        fieldErrors.password ? 'border-red-500' : 'border-white/10'
+                      }`}
+                    />
+                  </div>
+                  {fieldErrors.password && (
+                    <span className="text-[10px] text-red-400 mt-1 block">
+                      {fieldErrors.password}
+                    </span>
+                  )}
                 </div>
-                {fieldErrors.password && (
-                  <span className="text-[10px] text-red-400 mt-1 block">
-                    {fieldErrors.password}
-                  </span>
-                )}
-              </div>
+              )}
+
+              {/* Confirm Password (mode reset) */}
+              {mode === 'reset' && (
+                <div>
+                  <label className="text-[11px] uppercase font-bold text-[#A9A39D] block mb-1">
+                    Confirmez le nouveau mot de passe *
+                  </label>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-[#A9A39D] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className={`w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#211D1A] border text-xs text-[#F7F4F0] focus:outline-none focus:border-[#FF765F] transition-colors ${
+                        fieldErrors.confirmPassword ? 'border-red-500' : 'border-white/10'
+                      }`}
+                    />
+                  </div>
+                  {fieldErrors.confirmPassword && (
+                    <span className="text-[10px] text-red-400 mt-1 block">
+                      {fieldErrors.confirmPassword}
+                    </span>
+                  )}
+                </div>
+              )}
 
               {/* Submit Button */}
               <button
@@ -271,13 +441,34 @@ export const AuthPage: React.FC = () => {
                     <span>Continuer vers la configuration</span>
                     <ArrowRight className="w-4 h-4" />
                   </>
-                ) : (
+                ) : mode === 'signin' ? (
                   <>
                     <span>Accéder à mon espace commerçant</span>
                     <ArrowRight className="w-4 h-4" />
                   </>
+                ) : mode === 'forgot' ? (
+                  <>
+                    <span>Envoyer le lien de réinitialisation</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                ) : (
+                  <>
+                    <span>Mettre à jour mon mot de passe</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
                 )}
               </button>
+
+              {/* Bouton retour en mode mot de passe oublié */}
+              {mode === 'forgot' && (
+                <button
+                  type="button"
+                  onClick={() => toggleMode('signin')}
+                  className="w-full text-center text-xs text-[#A9A39D] hover:text-[#F7F4F0] transition-colors pt-1 cursor-pointer"
+                >
+                  Annuler et revenir à la connexion
+                </button>
+              )}
             </form>
           )}
 

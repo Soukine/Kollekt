@@ -1,4 +1,39 @@
-import { Shop, Customer, AuditLogEntry, Campaign, StaffMember } from '../types';
+import { Shop, Customer, AuditLogEntry, Campaign, StaffMember, ShopLocation } from '../types';
+
+export const INITIAL_LOCATIONS: ShopLocation[] = [
+  {
+    id: 'loc_smash_01',
+    shopId: 'shop_smash_burger',
+    name: 'Foodtruck Madeleine (Principal)',
+    address: 'Place de la Madeleine / Spot 4',
+    city: 'Paris 8e',
+    isActive: true,
+  },
+  {
+    id: 'loc_smash_02',
+    shopId: 'shop_smash_burger',
+    name: 'Corner Gare de Lyon',
+    address: 'Hall 2, Esplanade Diderot',
+    city: 'Paris 12e',
+    isActive: true,
+  },
+  {
+    id: 'loc_bloom_01',
+    shopId: 'shop_cafe_bloom',
+    name: 'Boutique Petites Écuries',
+    address: '14 rue des Petites Écuries',
+    city: 'Paris 10e',
+    isActive: true,
+  },
+  {
+    id: 'loc_cantina_01',
+    shopId: 'shop_cantina_fresca',
+    name: 'Trattoria Saint-Maur',
+    address: '42 rue Saint-Maur',
+    city: 'Paris 11e',
+    isActive: true,
+  },
+];
 
 export const INITIAL_SHOPS: Shop[] = [
   {
@@ -254,6 +289,8 @@ export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
   {
     id: 'log_01',
     shopId: 'shop_smash_burger',
+    locationId: 'loc_smash_01',
+    locationName: 'Foodtruck Madeleine (Principal)',
     timestamp: '2026-10-12T13:10:00Z',
     operatorName: 'Maxime (Caisse 1)',
     operatorRole: 'employee',
@@ -269,6 +306,8 @@ export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
   {
     id: 'log_02',
     shopId: 'shop_smash_burger',
+    locationId: 'loc_smash_01',
+    locationName: 'Foodtruck Madeleine (Principal)',
     timestamp: '2026-10-11T20:50:00Z',
     operatorName: 'Maxime (Caisse 1)',
     operatorRole: 'employee',
@@ -284,6 +323,8 @@ export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
   {
     id: 'log_03',
     shopId: 'shop_smash_burger',
+    locationId: 'loc_smash_01',
+    locationName: 'Foodtruck Madeleine (Principal)',
     timestamp: '2026-10-10T12:45:00Z',
     operatorName: 'Sarah (Gérante)',
     operatorRole: 'admin',
@@ -299,6 +340,8 @@ export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
   {
     id: 'log_04',
     shopId: 'shop_smash_burger',
+    locationId: 'loc_smash_02',
+    locationName: 'Corner Gare de Lyon',
     timestamp: '2026-10-08T19:40:00Z',
     operatorName: 'Maxime (Caisse 1)',
     operatorRole: 'employee',
@@ -314,6 +357,8 @@ export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
   {
     id: 'log_05',
     shopId: 'shop_smash_burger',
+    locationId: 'loc_smash_01',
+    locationName: 'Foodtruck Madeleine (Principal)',
     timestamp: '2026-09-25T13:20:00Z',
     operatorName: 'Sarah (Gérante)',
     operatorRole: 'admin',
@@ -329,6 +374,8 @@ export const INITIAL_AUDIT_LOGS: AuditLogEntry[] = [
   {
     id: 'log_06',
     shopId: 'shop_smash_burger',
+    locationId: 'loc_smash_01',
+    locationName: 'Foodtruck Madeleine (Principal)',
     timestamp: '2026-09-18T12:30:00Z',
     operatorName: 'Sarah (Gérante)',
     operatorRole: 'admin',

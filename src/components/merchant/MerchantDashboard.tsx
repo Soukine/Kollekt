@@ -4,6 +4,7 @@ import { Customer, RewardMode, StampIconType } from '../../types';
 import { WalletPassCard } from '../customer/WalletPassCard';
 import { StandPlvView } from './StandPlvView';
 import { CardStudioView } from './CardStudioView';
+import { DashboardOverview } from './DashboardOverview';
 import {
   BarChart3,
   CreditCard,
@@ -21,6 +22,7 @@ import {
   Sparkles,
   Info,
   Clock,
+  Scan,
   Smartphone,
   AlertTriangle,
   RotateCcw,
@@ -39,6 +41,7 @@ export const MerchantDashboard: React.FC = () => {
     updateShopInfo,
     manualAdjustBalance,
     sendCampaign,
+    setRole,
   } = useApp();
 
   const [activeTab, setActiveTab] = useState<MerchantTab>('overview');
@@ -149,177 +152,22 @@ export const MerchantDashboard: React.FC = () => {
             </button>
           );
         })}
+
+        <div className="ml-auto pl-2 border-l border-white/10 hidden sm:block">
+          <button
+            onClick={() => setRole('staff')}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-extrabold bg-[#FF765F]/15 hover:bg-[#FF765F]/25 text-[#FF765F] border border-[#FF765F]/30 transition-all cursor-pointer"
+            title="Ouvrir le scanner caméra pour créditer ou encaisser un client"
+          >
+            <Scan className="w-4 h-4" />
+            <span>Scanner un client</span>
+          </button>
+        </div>
       </div>
 
       {/* ================= TAB 1: OVERVIEW ================= */}
       {activeTab === 'overview' && (
-        <div className="space-y-6">
-          {/* Top KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-[#2C2825] border border-white/10 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-              <span className="text-[11px] uppercase font-bold text-[#A9A39D] tracking-wider block">
-                Clients Inscrits
-              </span>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="font-mono text-3xl font-extrabold text-[#F7F4F0]">
-                  {totalCustomers}
-                </span>
-                <span className="text-xs font-semibold text-[#8BE3A2] flex items-center gap-1">
-                  <TrendingUp className="w-3.5 h-3.5" /> +14% ce mois
-                </span>
-              </div>
-              <p className="text-[11px] text-[#A9A39D] mt-2">
-                Dont <b>{shopCustomers.filter((c) => c.walletInstalled.apple || c.walletInstalled.google).length}</b> avec pass Wallet actif
-              </p>
-            </div>
-
-            <div className="bg-[#2C2825] border border-white/10 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-              <span className="text-[11px] uppercase font-bold text-[#A9A39D] tracking-wider block">
-                Taux de Rétention (30j)
-              </span>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="font-mono text-3xl font-extrabold text-[#8BE3A2]">
-                  68.4%
-                </span>
-                <span className="text-xs font-semibold text-[#8BE3A2] flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5" /> Élevé
-                </span>
-              </div>
-              <p className="text-[11px] text-[#A9A39D] mt-2">
-                Clients revenant au moins 2 fois par mois
-              </p>
-            </div>
-
-            <div className="bg-[#2C2825] border border-white/10 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-              <span className="text-[11px] uppercase font-bold text-[#A9A39D] tracking-wider block">
-                Tampons Distribués
-              </span>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="font-mono text-3xl font-extrabold text-[#FF765F]">
-                  {totalStampsDistributed || 42}
-                </span>
-                <span className="text-xs font-semibold text-[#A9A39D]">
-                  {totalVisits} visites
-                </span>
-              </div>
-              <p className="text-[11px] text-[#A9A39D] mt-2">
-                <b>{totalRewardsClaimed}</b> récompenses déjà offertes
-              </p>
-            </div>
-
-            <div className="bg-[#2C2825] border border-white/10 rounded-3xl p-5 shadow-xl relative overflow-hidden">
-              <span className="text-[11px] uppercase font-bold text-[#A9A39D] tracking-wider block">
-                CA Fidélisé Estimé*
-              </span>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="font-mono text-3xl font-extrabold text-[#F7F4F0]">
-                  {estimatedLoyaltyTurnover} €
-                </span>
-              </div>
-              <p className="text-[10px] text-[#A9A39D] italic mt-2">
-                *estimation indicative et non contractuelle (panier moyen 14,50€)
-              </p>
-            </div>
-          </div>
-
-          {/* Visits chart & Quick actions */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Chart */}
-            <div className="lg:col-span-8 bg-[#2C2825] border border-white/10 rounded-3xl p-6 shadow-xl space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-bold text-[#F7F4F0]">
-                    Fréquentation & Pass Scannés (7 derniers jours)
-                  </h3>
-                  <p className="text-xs text-[#A9A39D] mt-0.5">
-                    Activité cumulée en caisse pour {currentShop.name}
-                  </p>
-                </div>
-                <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-white/5 text-[#8BE3A2] border border-white/10">
-                  +22% vs semaine passée
-                </span>
-              </div>
-
-              {/* Simplified high quality CSS bar chart */}
-              <div className="pt-6 pb-2">
-                <div className="grid grid-cols-7 gap-3 items-end h-44">
-                  {[
-                    { day: 'Lun', val: 14, count: '14 scans' },
-                    { day: 'Mar', val: 22, count: '22 scans' },
-                    { day: 'Mer', val: 28, count: '28 scans' },
-                    { day: 'Jeu', val: 36, count: '36 scans' },
-                    { day: 'Ven', val: 45, count: '45 scans' },
-                    { day: 'Sam', val: 52, count: '52 scans' },
-                    { day: 'Dim', val: 30, count: '30 scans' },
-                  ].map((bar, idx) => {
-                    const heightPercent = (bar.val / 55) * 100;
-                    return (
-                      <div key={idx} className="flex flex-col items-center h-full justify-end group">
-                        <span className="text-[10px] text-[#A9A39D] opacity-0 group-hover:opacity-100 transition-opacity mb-1 font-mono">
-                          {bar.val}
-                        </span>
-                        <div
-                          className="w-full max-w-[42px] bg-white/10 hover:bg-[#FF765F] rounded-t-xl transition-all duration-300 relative"
-                          style={{ height: `${heightPercent}%` }}
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-t from-transparent to-white/10 rounded-t-xl" />
-                        </div>
-                        <span className="text-xs font-semibold text-[#A9A39D] mt-2">
-                          {bar.day}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Quick shortcuts & Alerts */}
-            <div className="lg:col-span-4 space-y-4">
-              <div className="bg-[#2C2825] border border-white/10 rounded-3xl p-6 shadow-xl space-y-4">
-                <h3 className="text-sm font-bold text-[#F7F4F0] flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-[#FF765F]" />
-                  Alertes & Opportunités
-                </h3>
-
-                <div className="space-y-3">
-                  <div className="p-3 rounded-2xl bg-[#8BE3A2]/10 border border-[#8BE3A2]/20 flex items-start gap-2.5">
-                    <Gift className="w-4 h-4 text-[#8BE3A2] shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-[#F7F4F0]">
-                        1 récompense prête en caisse
-                      </p>
-                      <p className="text-[11px] text-[#A9A39D] mt-0.5">
-                        Thomas Dubois a complété ses 8 tampons.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-2xl bg-[#FF765F]/10 border border-[#FF765F]/20 flex items-start gap-2.5">
-                    <Bell className="w-4 h-4 text-[#FF765F] shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-xs font-bold text-[#F7F4F0]">
-                        Relance 1 client inactif
-                      </p>
-                      <p className="text-[11px] text-[#A9A39D] mt-0.5">
-                        Sophie Leroy n'est pas venue depuis 38 jours. Envoyez un push Wallet !
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <button
-                    onClick={() => setActiveTab('campaigns')}
-                    className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold text-[#F7F4F0] flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                  >
-                    <span>Lancer une offre flash Wallet</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <DashboardOverview onNavigateToTab={(tab) => setActiveTab(tab)} />
       )}
 
       {/* ================= TAB 2: STUDIO CARTE & PASS ================= */}
@@ -440,12 +288,12 @@ export const MerchantDashboard: React.FC = () => {
                       <td className="p-3.5">
                         <div className="flex items-center gap-1.5">
                           {cust.walletInstalled.apple && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-white/10 text-white font-medium" title="Installé sur Apple Wallet">
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-white/10 text-white font-medium" title="Pass créé & lien Apple Wallet disponible">
                                Apple
                             </span>
                           )}
                           {cust.walletInstalled.google && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-[#8BE3A2]/15 text-[#8BE3A2] font-medium" title="Installé sur Google Wallet">
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-[#8BE3A2]/15 text-[#8BE3A2] font-medium" title="Pass créé & lien Google Wallet disponible">
                               G Wallet
                             </span>
                           )}

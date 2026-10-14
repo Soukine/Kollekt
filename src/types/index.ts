@@ -76,6 +76,7 @@ export type AuditActionType =
   | 'STAMP_ADD'
   | 'STAMP_REMOVE'
   | 'POINT_ADD'
+  | 'POINT_REMOVE'
   | 'POINT_REDEEM'
   | 'REWARD_CLAIM'
   | 'MANUAL_ADJUST'
@@ -85,6 +86,8 @@ export type AuditActionType =
 export interface AuditLogEntry {
   id: string;
   shopId: string;
+  locationId?: string;
+  locationName?: string;
   timestamp: string;
   operatorName: string;
   operatorRole: 'admin' | 'employee';
@@ -96,6 +99,34 @@ export interface AuditLogEntry {
   newBalance: number;
   idempotencyKey: string;
   note?: string;
+}
+
+export interface ShopLocation {
+  id: string;
+  shopId: string;
+  name: string;
+  address: string;
+  city: string;
+  isActive: boolean;
+}
+
+export type DashboardPeriod = '7d' | '30d' | '90d' | 'custom';
+
+export interface DashboardKPIs {
+  newCardsCount: number;
+  loyaltyVisitsCount: number;
+  rewardsClaimedCount: number;
+  activeCustomersCount: number;
+  referralsCount: number;
+  totalPointsOrStampsIssued: number;
+}
+
+export interface TimeSeriesPoint {
+  date: string; // YYYY-MM-DD
+  label: string; // e.g. "Lun 12" ou "12 Oct"
+  visits: number;
+  rewards: number;
+  newCards: number;
 }
 
 export interface Campaign {
@@ -120,3 +151,4 @@ export interface StaffMember {
 }
 
 export type ActiveRole = 'merchant' | 'staff' | 'customer';
+
